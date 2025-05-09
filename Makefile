@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2
-LDFLAGS = -lmagic -lhpdf
+LDFLAGS = -lhpdf
 
 TARGET = bldd
 SRC = bldd.c

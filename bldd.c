@@ -5,7 +5,6 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <magic.h>
 #include <stdbool.h>
 #include <limits.h>
 #include <hpdf.h>
@@ -48,7 +47,6 @@ typedef struct {
 Architecture archs[MAX_ARCH];
 int arch_count = 0;
 int total_execs = 0;
-magic_t magic_cookie;
 
 // Function prototypes
 void parse_arguments(int argc, char *argv[], Options *options);
@@ -71,19 +69,6 @@ int main(int argc, char *argv[]) {
     // Initialize
     memset(&options, 0, sizeof(Options));
     memset(archs, 0, sizeof(archs));
-    
-    // Initialize libmagic
-    magic_cookie = magic_open(MAGIC_NONE);
-    if (magic_cookie == NULL) {
-        fprintf(stderr, "Unable to initialize magic library\n");
-        return 1;
-    }
-    
-    if (magic_load(magic_cookie, NULL) != 0) {
-        fprintf(stderr, "Cannot load magic database: %s\n", magic_error(magic_cookie));
-        magic_close(magic_cookie);
-        return 1;
-    }
     
     // Parse command line arguments
     parse_arguments(argc, argv, &options);
@@ -288,38 +273,51 @@ void scan_directory(const char *dir_path, Options *options) {
 }
 
 bool is_executable(const char *file_path) {
+    char cmd[MAX_PATH * 2];
+    
     // Check if file is accessible and executable
     if (access(file_path, X_OK) != 0) {
         return false;
     }
     
-    // Check if it's an ELF file
-    const char *file_type = magic_file(magic_cookie, file_path);
-    if (file_type == NULL) {
-        return false;
-    }
+    snprintf(cmd, sizeof(cmd), "readelf -h \"%s\" >/dev/null 2>&1", file_path);
+    int result = system(cmd);
     
-    return (strstr(file_type, "ELF") != NULL);
+    return (result == 0);
 }
 
 const char *get_architecture(const char *file_path) {
-    const char *file_type = magic_file(magic_cookie, file_path);
+    FILE *fp;
+    char cmd[MAX_PATH * 2];
+    char line[MAX_LINE];
     
-    if (file_type == NULL) {
+    snprintf(cmd, sizeof(cmd), "readelf -h \"%s\" 2>/dev/null", file_path);
+    fp = popen(cmd, "r");
+    if (fp == NULL) {
         return "unknown";
     }
     
-    if (strstr(file_type, "x86-64") != NULL || 
-        (strstr(file_type, "Intel 80386") != NULL && strstr(file_type, "64-bit") != NULL)) {
-        return "x86_64";
-    } else if (strstr(file_type, "Intel 80386") != NULL) {
-        return "x86";
-    } else if (strstr(file_type, "ARM") != NULL && strstr(file_type, "aarch64") != NULL) {
-        return "aarch64";
-    } else if (strstr(file_type, "ARM") != NULL) {
-        return "armv7";
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        if (strstr(line, "Machine:") != NULL) {
+            if (strstr(line, "Advanced Micro Devices X86-64") != NULL ||
+                strstr(line, "AMD x86-64") != NULL) {
+                pclose(fp);
+                return "x86_64";
+            } else if (strstr(line, "Intel 80386") != NULL) {
+                pclose(fp);
+                return "x86";
+            } else if (strstr(line, "ARM aarch64") != NULL ||
+                       strstr(line, "AArch64") != NULL) {
+                pclose(fp);
+                return "aarch64";
+            } else if (strstr(line, "ARM") != NULL) {
+                pclose(fp);
+                return "armv7";
+            }
+        }
     }
     
+    pclose(fp);
     return "unknown";
 }
 
@@ -328,48 +326,58 @@ void get_dependencies(const char *file_path, char **libs, int lib_count, const c
     char cmd[MAX_PATH * 2];
     char line[MAX_LINE];
     
-    // Run ldd on the executable
-    snprintf(cmd, sizeof(cmd), "ldd \"%s\" 2>&1", file_path);
+    snprintf(cmd, sizeof(cmd), "readelf -d \"%s\" 2>/dev/null", file_path);
     fp = popen(cmd, "r");
     if (fp == NULL) {
-        fprintf(stderr, "Failed to run ldd on %s\n", file_path);
+        fprintf(stderr, "Failed to run readelf on %s\n", file_path);
         return;
     }
     
+    bool has_needed_section = false;
+    
     while (fgets(line, sizeof(line), fp) != NULL) {
-        // Skip if not a dynamic executable
-        if (strstr(line, "not a dynamic executable") != NULL) {
-            pclose(fp);
-            return;
-        }
-        
-        // Check if any of the target libraries are in this dependency line
-        for (int i = 0; i < lib_count; i++) {
-            char lib_pattern[256];
-            const char *lib_name = libs[i];
+        if (strstr(line, "(NEEDED)") != NULL) {
+            has_needed_section = true;
+            char lib_name[256] = {0};
             
-            // Ensure lib name has .so in it
-            if (strstr(lib_name, ".so") == NULL) {
-                // Might be just a base name like "c" instead of "libc.so"
-                if (strncmp(lib_name, "lib", 3) != 0) {
-                    snprintf(lib_pattern, sizeof(lib_pattern), "lib%s.so", lib_name);
-                } else {
-                    snprintf(lib_pattern, sizeof(lib_pattern), "%s.so", lib_name);
+            char *start = strstr(line, "[");
+            char *end = strstr(line, "]");
+            
+            if (start && end && (end > start)) {
+                start++;
+                strncpy(lib_name, start, end - start);
+                lib_name[end - start] = '\0';
+                
+                for (int i = 0; i < lib_count; i++) {
+                    char lib_pattern[256];
+                    const char *lib_search = libs[i];
+                    
+                    if (strstr(lib_search, ".so") == NULL) {
+                        if (strncmp(lib_search, "lib", 3) != 0) {
+                            snprintf(lib_pattern, sizeof(lib_pattern), "lib%s.so", lib_search);
+                        } else {
+                            snprintf(lib_pattern, sizeof(lib_pattern), "%s.so", lib_search);
+                        }
+                    } else {
+                        strcpy(lib_pattern, lib_search);
+                    }
+                    
+                    if (strstr(lib_name, lib_pattern) != NULL) {
+                        int arch_index = find_or_add_architecture(arch);
+                        int lib_index = find_or_add_library(arch_index, lib_pattern);
+                        add_executable(arch_index, lib_index, file_path);
+                        break;
+                    }
                 }
-            } else {
-                strcpy(lib_pattern, lib_name);
-            }
-            
-            if (strstr(line, lib_pattern) != NULL) {
-                int arch_index = find_or_add_architecture(arch);
-                int lib_index = find_or_add_library(arch_index, lib_pattern);
-                add_executable(arch_index, lib_index, file_path);
-                break;
             }
         }
     }
     
     pclose(fp);
+    
+    if (!has_needed_section) {
+        return;
+    }
 }
 
 int find_or_add_architecture(const char *arch) {
@@ -641,7 +649,4 @@ void cleanup() {
             }
         }
     }
-    
-    // Close libmagic
-    magic_close(magic_cookie);
 } 
