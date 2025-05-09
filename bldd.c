@@ -7,9 +7,17 @@
 #include <sys/types.h>
 #include <stdbool.h>
 #include <limits.h>
-#include <hpdf.h>
 #include <libgen.h>
 #include <errno.h>
+
+// Define PDF_SUPPORT to 0 if you don't have libhpdf installed
+#ifndef PDF_SUPPORT
+#define PDF_SUPPORT 1
+#endif
+
+#if PDF_SUPPORT
+#include <hpdf.h>
+#endif
 
 #define MAX_LIBS 100
 #define MAX_PATH 4096
@@ -497,13 +505,16 @@ void generate_txt_report(Options *options) {
 }
 
 void error_handler(HPDF_STATUS error_no, HPDF_STATUS detail_no, void *user_data) {
+#if PDF_SUPPORT
     /* Suppress unused parameter warning */
     (void)user_data;
     
     fprintf(stderr, "PDF Error: error_no=%04X, detail_no=%d\n", (unsigned int)error_no, (int)detail_no);
+#endif
 }
 
 void generate_pdf_report(Options *options) {
+#if PDF_SUPPORT
     HPDF_Doc pdf;
     HPDF_Page page;
     HPDF_Font font;
@@ -638,6 +649,9 @@ void generate_pdf_report(Options *options) {
     
     // Clean up
     HPDF_Free(pdf);
+#else
+    fprintf(stderr, "PDF support is not available. Recompile with PDF_SUPPORT=1 and libhpdf installed.\n");
+#endif
 }
 
 void cleanup() {

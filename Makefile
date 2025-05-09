@@ -1,6 +1,16 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2
-LDFLAGS = -lhpdf
+
+# Set to 0 to disable PDF support if libhpdf is not available
+PDF_SUPPORT ?= 1
+
+ifeq ($(PDF_SUPPORT),1)
+    CFLAGS += -DPDF_SUPPORT=1
+    LDFLAGS = -lhpdf
+else
+    CFLAGS += -DPDF_SUPPORT=0
+    LDFLAGS =
+endif
 
 TARGET = bldd
 SRC = bldd.c
