@@ -69,7 +69,9 @@ void add_executable(int arch_index, int lib_index, const char *exec_path);
 void generate_txt_report(Options *options);
 void generate_pdf_report(Options *options);
 void cleanup();
+#if PDF_SUPPORT
 void error_handler(HPDF_STATUS error_no, HPDF_STATUS detail_no, void *user_data);
+#endif
 
 int main(int argc, char *argv[]) {
     Options options;
@@ -504,14 +506,14 @@ void generate_txt_report(Options *options) {
     printf("Text report saved to %s\n", output_file);
 }
 
-void error_handler(HPDF_STATUS error_no, HPDF_STATUS detail_no, void *user_data) {
 #if PDF_SUPPORT
+void error_handler(HPDF_STATUS error_no, HPDF_STATUS detail_no, void *user_data) {
     /* Suppress unused parameter warning */
     (void)user_data;
     
     fprintf(stderr, "PDF Error: error_no=%04X, detail_no=%d\n", (unsigned int)error_no, (int)detail_no);
-#endif
 }
+#endif
 
 void generate_pdf_report(Options *options) {
 #if PDF_SUPPORT
@@ -650,6 +652,8 @@ void generate_pdf_report(Options *options) {
     // Clean up
     HPDF_Free(pdf);
 #else
+    /* Suppress unused parameter warning */
+    (void)options;
     fprintf(stderr, "PDF support is not available. Recompile with PDF_SUPPORT=1 and libhpdf installed.\n");
 #endif
 }
